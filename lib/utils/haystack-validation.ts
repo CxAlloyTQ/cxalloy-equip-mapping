@@ -367,7 +367,7 @@ export function exportToSkySpark(tagSet: HaystackTagSet): string {
       // Check references
       const ref = tagSet.refs?.find(r => r.name === column);
       if (ref) {
-        row.push(`@${ref.value}`);
+        row.push(`@${ref.id}`);
       } else {
         row.push('');
       }
@@ -400,7 +400,7 @@ export function exportToZinc(tagSet: HaystackTagSet): string {
   grid.cols.push({ name: 'dis' });
   
   // Add marker columns
-  for (const marker of tagSet.markers.sort()) {
+  for (const marker of (tagSet.markers || []).sort()) {
     grid.cols.push({ name: marker });
   }
   
@@ -418,7 +418,7 @@ export function exportToZinc(tagSet: HaystackTagSet): string {
   };
   
   // Add markers
-  for (const marker of tagSet.markers) {
+  for (const marker of (tagSet.markers || []).sort()) {
     row[marker] = 'm:';
   }
   
@@ -454,7 +454,7 @@ export function exportToTrio(tagSet: HaystackTagSet): string {
   lines.push(`dis: "${tagSet.dis}"`);
   
   // Add markers
-  for (const marker of tagSet.markers.sort()) {
+  for (const marker of (tagSet.markers || []).sort()) {
     lines.push(`${marker}`);
   }
   
@@ -475,7 +475,7 @@ export function exportToTrio(tagSet: HaystackTagSet): string {
   
   // Add references
   for (const ref of tagSet.refs || []) {
-    lines.push(`${ref.name}: @${ref.value}`);
+    lines.push(`${ref.name}: @${ref.id}`);
   }
   
   return lines.join('\n');
@@ -501,13 +501,13 @@ export function generateComplianceReport(results: TagValidationResult[]): {
   const summary = {
     totalPoints: results.length,
     validPoints: results.filter(r => r.valid).length,
-    averageScore: results.reduce((sum, r) => sum + r.compliance.score, 0) / results.length,
+    averageScore: results.reduce((sum, r) => sum + (r.compliance?.score || 0), 0) / results.length,
     complianceLevels: {
-      full: results.filter(r => r.compliance.level === 'full').length,
-      high: results.filter(r => r.compliance.level === 'high').length,
-      medium: results.filter(r => r.compliance.level === 'medium').length,
-      low: results.filter(r => r.compliance.level === 'low').length
-    }
+      full: results.filter(r => r.compliance?.level === 'full').length,
+      high: results.filter(r => r.compliance?.level === 'high').length,
+      medium: results.filter(r => r.compliance?.level === 'medium').length,
+      low: results.filter(r => r.compliance?.level === 'low').length,
+    },
   };
 
   // Aggregate issues
@@ -570,22 +570,17 @@ export function validateBatchHaystackTags(tagSets: HaystackTagSet[]): TagValidat
  */
 export function generateBatchComplianceReport(tagSets: HaystackTagSet[]): HaystackComplianceReport {
   const report: HaystackComplianceReport = {
+    totalEntities: tagSets.length,
+    compliantEntities: 0,
+    complianceRate: 0,
+    generatedAt: new Date(),
     totalPoints: tagSets.length,
     validPoints: 0,
     averageCompliance: 0,
-    complianceDistribution: {
-      full: 0,
-      high: 0,
-      medium: 0,
-      low: 0
-    },
+    complianceDistribution: { full: 0, high: 0, medium: 0, low: 0 },
     commonIssues: [],
     recommendations: [],
-    tagStatistics: {
-      mostCommonTags: [],
-      unusualTags: [],
-      deprecatedTags: []
-    }
+    tagStatistics: { mostCommonTags: [], unusualTags: [], deprecatedTags: [] },
   };
 
   if (tagSets.length === 0) {
@@ -603,13 +598,12 @@ export function generateBatchComplianceReport(tagSets: HaystackTagSet[]): Haysta
     const validation = validateHaystackTags(tagSet);
     
     if (validation.valid) {
-      report.validPoints++;
+      report.validPoints = (report.validPoints || 0) + 1;
     }
     
-    totalCompliance += validation.compliance.score;
-    
+    totalCompliance += (validation.compliance?.score || 0);
     // Count compliance levels
-    if (validation.compliance.level) {
+    if (validation.compliance?.level && report.complianceDistribution) {
       report.complianceDistribution[validation.compliance.level]++;
     }
     
@@ -617,9 +611,8 @@ export function generateBatchComplianceReport(tagSets: HaystackTagSet[]): Haysta
     allIssues.push(...validation.errors, ...validation.warnings);
     
     // Count tag usage
-    for (const tag of tagSet.markers) {
+    for (const tag of tagSet.markers || []) {
       tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
-      
       const baseTag = tag.split(':')[0];
       if (DEPRECATED_MARKERS.has(baseTag)) {
         deprecatedTags.add(tag);
@@ -633,14 +626,15 @@ export function generateBatchComplianceReport(tagSets: HaystackTagSet[]): Haysta
   report.averageCompliance = Math.round(totalCompliance / tagSets.length);
 
   // Find most common tags
-  report.tagStatistics.mostCommonTags = Array.from(tagCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([tag, count]) => ({ tag, count, percentage: Math.round((count / tagSets.length) * 100) }));
-
-  // Set unusual and deprecated tags
-  report.tagStatistics.unusualTags = Array.from(unusualTags);
-  report.tagStatistics.deprecatedTags = Array.from(deprecatedTags);
+  if (report.tagStatistics) {
+    report.tagStatistics.mostCommonTags = Array.from(tagCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    report.tagStatistics.unusualTags = Array.from(tagCounts.entries())
+      .filter(([tag, count]) => count === 1)
+      .map(([tag]) => tag);
+    report.tagStatistics.deprecatedTags = Array.from(deprecatedTags);
+  }
 
   // Find common issues
   const issueCounts = new Map<string, number>();
@@ -651,7 +645,7 @@ export function generateBatchComplianceReport(tagSets: HaystackTagSet[]): Haysta
   report.commonIssues = Array.from(issueCounts.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([issue, count]) => ({ issue, count, percentage: Math.round((count / tagSets.length) * 100) }));
+    .map(([issue, count]) => ({ issue, count, severity: 'medium' as const }));
 
   // Generate recommendations
   if (report.averageCompliance < 80) {
@@ -666,7 +660,7 @@ export function generateBatchComplianceReport(tagSets: HaystackTagSet[]): Haysta
     report.recommendations.push(`Review ${unusualTags.size} non-standard tags for potential standardization`);
   }
 
-  if (report.validPoints / report.totalPoints < 0.9) {
+  if ((report.validPoints || 0) / (report.totalPoints || 1) < 0.9) {
     report.recommendations.push('Focus on resolving validation errors to improve point quality');
   }
 
